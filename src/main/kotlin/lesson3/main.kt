@@ -15,6 +15,7 @@ import de.fabmax.kool.pipeline.ClearColorLoad   // Чтобы не стекат�
 
 import de.fabmax.kool.modules.ui2.*             // HTML - создание текста, кнопок, панелей, Row, Column, mutableStateOf...
 import de.fabmax.kool.modules.ui2.UiModifier.*  // CSS - padding()  align()  background()  size()
+import kotlin.String
 
 // Типы предметов
 enum class ItemType{
@@ -62,7 +63,7 @@ class GameState {
 
     val dummyHp = mutableStateOf(50)
 
-    // Хотбар на 9 слотов, List<ItemStack?> - в ячейку хотбара монжо положить только стак какого - то предмета или null (пусто)
+    // Хотбар на 9 слотов, List<ItemStack?> - в ячейку хотбара можно положить только стак какого - то предмета или null (пусто)
     val hotbar = mutableStateOf(
         List<ItemStack?>(9){null}
         // по умолчанию хотбар заполнен пустыми ячейками и может быть максимум 9 слотов
@@ -149,6 +150,12 @@ data class QuestStepCompleted(
     val stepIndex: Int,
 ) : GameEvent
 
+data class ItemDeleted(
+    override val playerId: String,
+    val itemId: String,
+    val amount: Int
+) : GameEvent
+
 typealias Listener = (GameEvent) -> Unit
 
 class EventBus{
@@ -169,9 +176,7 @@ class EventBus{
     }
 }
 
-class QuestSystem(
-    private val bus: EventBus
-) {
+class QuestSystem(private val bus: EventBus) {
     val questId = "q_training"
 
     // Прогресс конкретного квеста по игрокам
@@ -285,6 +290,26 @@ fun pushLog(game: GameState, text: String) {
     // takeLast - обрезает список строк и оставляет только последние n строчек
 }
 
+fun deleteItem(
+    slots: List<ItemStack?>,
+    slotIndex: Int,
+    bus: EventBus,
+    playerId: String,
+    item: Item,
+    amount: Int
+): Pair<List<ItemStack?>, Int> {
+    bus.publish(
+        ItemDeleted(playerId, item.id, amount)
+    )
+    val newSlots = slots.toMutableList()
+    val current = newSlots[slotIndex]
+
+    if (current != null) {
+        val toRemove = minOf(amount, 0)
+        val left = 
+    }
+}
+
 fun main() = KoolApplication {
     val game = GameState()
     val bus = EventBus()
@@ -296,6 +321,8 @@ fun main() = KoolApplication {
             is DamageDealt -> "${event.playerId} нанес ${event.amount} урона ${event.targetId}"
             is EffectApplied -> "Эффект ${event.effectedId} наложен на ${event.ticks} тиков"
             is QuestStepCompleted -> "Шаг ${event.stepIndex + 1} квеста ${event.questId}"
+            is ItemDeleted -> "Предмет удален: ${event.itemId}"
+            else -> {}
         }
 
         pushLog(game, "[${event.playerId}] $line")
@@ -304,18 +331,18 @@ fun main() = KoolApplication {
     addScene {
         defaultOrbitCamera()
 
-        addColorMesh {
-            generate { cube{colored()} }
-
-            shader = KslPbrShader {
-                color { vertexColor() }
-                metallic(0.7f)
-                roughness(0.10f)
-            }
-            onUpdate {
-                transform.rotate(45f.deg * Time.deltaT, Vec3f.Z_AXIS)
-            }
-        }
+//        addColorMesh {
+//            generate { cube{colored()} }
+//
+//            shader = KslPbrShader {
+//                color { vertexColor() }
+//                metallic(0.7f)
+//                roughness(0.10f)
+//            }
+//            onUpdate {
+//                transform.rotate(45f.deg * Time.deltaT, Vec3f.Z_AXIS)
+//            }
+//        }
 
         lighting.singleDirectionalLight {
             setup(Vec3f(-1f, -1f, 1f))
@@ -427,6 +454,20 @@ fun main() = KoolApplication {
                             game.hotbar.value = updated
 
                             bus.publish(ItemAdded(pid, WOOD_SWORD.id, 1, leftOver))
+                        }
+                    }
+                }
+
+                Row {
+                    Button("Выкинуть меч") {
+                        modifier.margin(end=8.dp).onClick{
+                            val pid = game.playerId.value
+                            val idx = game.selectedSlot.value
+
+                            val (updated, leftOver) = deleteItem(game.hotbar.value, idx, WOOD_SWORD, 1)
+                            game.hotbar.value = updated
+
+                            bus.publish(ItemDeleted(pid, WOOD_SWORD.id, 1, leftOver))
                         }
                     }
                 }
