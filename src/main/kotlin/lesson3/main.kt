@@ -4,17 +4,16 @@ import de.fabmax.kool.KoolApplication           // Запускает движо
 import de.fabmax.kool.addScene                  // Функция добавления сцены (Игра, UI, Меню, Уровень)
 
 import de.fabmax.kool.math.*                    // Превращение числа в градусы (углов)
+import de.fabmax.kool.modules.ksl.KslPbrShader
 import de.fabmax.kool.scene.*                   // Сцена, камера по умолчанию, создание фигур, освещение
 
-import de.fabmax.kool.modules.ksl.KslPbrShader  // Шейдеры - материал объекта
-import de.fabmax.kool.modules.ksl.KslShader
 import de.fabmax.kool.util.Color                // Цветовая палитра (RGBA)
 import de.fabmax.kool.util.Time                 // Время - Time.deltaT - сколько секунд пройдет между кадрами
 
 import de.fabmax.kool.pipeline.ClearColorLoad   // Чтобы не стекать элемент уже отрисованный на экране. UI - всегда поверх всего на сцене
 
 import de.fabmax.kool.modules.ui2.*             // HTML - создание текста, кнопок, панелей, Row, Column, mutableStateOf...
-import de.fabmax.kool.modules.ui2.UiModifier.*  // CSS - padding()  align()  background()  size()
+import java.util.Scanner
 import kotlin.String
 
 // Типы предметов
@@ -29,7 +28,8 @@ data class Item(
     val id: String,
     val name: String,
     val type: ItemType,
-    val maxStack: Int
+    val maxStack: Int,
+    val minStack: Int
 )
 
 // Класс, описывающий стак предметов
@@ -43,14 +43,16 @@ val HEALING_POTION = Item(
     "potion_heal",
     "Healing potion",
     ItemType.POTION,
-    12
+    12,
+    0
 )
 
 val WOOD_SWORD = Item(
     "wood_sword",
     "Wood Sword",
     ItemType.WEAPON,
-    1
+    1,
+    0
 )
 
 class GameState {
@@ -238,9 +240,9 @@ fun putIntoSlot(
     addCount: Int              // количество в стаке
 ): Pair<List<ItemStack?>, Int> {          // Возвращаем список, но уже с новым предметом
     val newSlots = slots.toMutableList()   // Копия списков слотов для его редактирования
-    val current = newSlots[slotIndex]      // текущий стак в слоте (может быть null)
+    val currentSlot = newSlots[slotIndex]      // текущий стак в слоте (может быть null)
 
-    if (current == null) {
+    if (currentSlot == null) {
         // Если слот, куда хотим положить, пуст, создаем в нем новый стак
         val count = minOf(addCount, item.maxStack)
         newSlots[slotIndex] = ItemStack(item, count)
@@ -249,12 +251,12 @@ fun putIntoSlot(
     }
 
     // Если слот в который кладем не пуст - стакаем предметы, только если они того же типа, что уже лежат в слоте
-    if (current.item.id == item.id && item.maxStack > 1) {
-        val freeSpace = item.maxStack - current.count
+    if (currentSlot.item.id == item.id && item.maxStack > 1) {
+        val freeSpace = item.maxStack - currentSlot.count
         // Отнимаем от кол-ва уже лежащих в стаке предметов от максимально допустимого кол-ва в стаке
         val toAdd = minOf(addCount, freeSpace)
-        newSlots[slotIndex] = ItemStack(item, current.count + toAdd)
-        val leftOver = addCount - freeSpace
+        newSlots[slotIndex] = ItemStack(item, currentSlot.count + toAdd)
+        val leftOver = addCount - toAdd
         return Pair(newSlots, leftOver)
     }
     return Pair(newSlots, addCount)
@@ -269,18 +271,18 @@ fun useSelected(
     // мы сейчас возвращаем два значения, а именно: новый хотбар + информацию о том, сколько предметов еще не влезло в него
 
     val newSlots = slots.toMutableList()
-    val current = newSlots[slotIndex] ?: return Pair(newSlots, null)
+    val currentSlot = newSlots[slotIndex] ?: return Pair(newSlots, null)
 
-    val newCount = current.count - 1
+    val newCount = currentSlot.count - 1
 
     if (newCount <= 0) {
-        // Если стало 0 - значит после использования предмета, стак закончился и слот стал пустым
+        // Если стало 0 - значит после использования предмета стак закончился и слот стал пустым
         newSlots[slotIndex] = null
     } else {
-        newSlots[slotIndex] = ItemStack(current.item, newCount)
+        newSlots[slotIndex] = ItemStack(currentSlot.item, newCount)
     }
 
-    return Pair(newSlots, current)
+    return Pair(newSlots, currentSlot)
 }
 
 fun pushLog(game: GameState, text: String) {
@@ -293,21 +295,23 @@ fun pushLog(game: GameState, text: String) {
 fun deleteItem(
     slots: List<ItemStack?>,
     slotIndex: Int,
-    bus: EventBus,
-    playerId: String,
     item: Item,
-    amount: Int
-): Pair<List<ItemStack?>, Int> {
-    bus.publish(
-        ItemDeleted(playerId, item.id, amount)
-    )
-    val newSlots = slots.toMutableList()
-    val current = newSlots[slotIndex]
+    removeCount: Int
+): List<ItemStack?> {
 
-    if (current != null) {
-        val toRemove = minOf(amount, 0)
-        val left = 
+    val newSlots = slots.toMutableList()
+    val currentSlot = newSlots[slotIndex]
+
+    if (currentSlot == null || currentSlot.count == 1) {
+        newSlots[slotIndex] = null
+        println("Слот уже пуст")
+        return newSlots
     }
+    if (currentSlot.item.id == item.id) {
+        val toRemove = minOf(removeCount, currentSlot.count)
+        newSlots[slotIndex] = ItemStack(item, currentSlot.count - toRemove)
+    }
+    return newSlots
 }
 
 fun main() = KoolApplication {
@@ -359,7 +363,7 @@ fun main() = KoolApplication {
                 // Накапливаем секунды действия яда
 
                 if (potionTimerSec >= 1f) {
-                    // Прошло >= 1 секунды  -  делаем 1 тик действий
+                    // Прошло >= 1 секунды - делаем 1 тик действий
                     potionTimerSec = 0f
 
                     game.potionTicksLeft.value--
@@ -418,7 +422,7 @@ fun main() = KoolApplication {
                                 .margin(end = 6.dp)
                                 .background(
                                     RoundRectBackground(
-                                        if (isSelected) Color(0.2f, 0.2f, 1f, 0.0f) else Color(0f, 0f, 0f, 0.35f),
+                                        if (isSelected) Color(0.4f, 0.7f, 1f, 0.0f) else Color(0f, 0f, 0f, 0.35f),
                                         8.dp
                                     ))
                                 .onClick {
@@ -445,32 +449,42 @@ fun main() = KoolApplication {
                 }
 
                 Row {
-                    Button("Получить меч") {
+                    Button("Получить предмет") {
                         modifier.margin(end=8.dp).onClick{
                             val pid = game.playerId.value
                             val idx = game.selectedSlot.value
 
-                            val (updated, leftOver) = putIntoSlot(game.hotbar.value, idx, WOOD_SWORD, 6)
+                            val (updated, leftOver) = putIntoSlot(game.hotbar.value, idx, HEALING_POTION, 1)
                             game.hotbar.value = updated
 
-                            bus.publish(ItemAdded(pid, WOOD_SWORD.id, 1, leftOver))
+                            bus.publish(ItemAdded(pid, HEALING_POTION.id, 1, leftOver))
                         }
                     }
                 }
 
                 Row {
-                    Button("Выкинуть меч") {
+                    Button("Выкинуть предмет") {
                         modifier.margin(end=8.dp).onClick{
                             val pid = game.playerId.value
                             val idx = game.selectedSlot.value
-
-                            val (updated, leftOver) = deleteItem(game.hotbar.value, idx, WOOD_SWORD, 1)
+                            val updated = deleteItem(game.hotbar.value, idx, HEALING_POTION, 1)
                             game.hotbar.value = updated
-
-                            bus.publish(ItemDeleted(pid, WOOD_SWORD.id, 1, leftOver))
+                            bus.publish(ItemDeleted(pid, HEALING_POTION.id, 1))
                         }
                     }
                 }
+            }
+        }
+        addColorMesh {
+            generate { cube{colored()} }
+
+            shader = KslPbrShader {
+                color { vertexColor() }
+                metallic(0.7f)
+                roughness(0.10f)
+            }
+            onUpdate {
+                transform.rotate(45f.deg * Time.deltaT, Vec3f.Z_AXIS)
             }
         }
     }
