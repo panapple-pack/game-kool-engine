@@ -249,7 +249,6 @@ class ServerWorld(
 
         for (pending in ready) {
             applyCommand(pending.cmd)
-            
         }
     }
 }
