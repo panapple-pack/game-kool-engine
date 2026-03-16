@@ -29,12 +29,11 @@ import kotlinx.coroutines.flow.asSharedFlow         // asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow          // asStateFlow
 import kotlinx.coroutines.flow.collect              // collect { } - слушать поток
 
-import kotlinx.coroutines.flow.filter               // фильтровать на какие события, будем реагировать
+import kotlinx.coroutines.flow.filter               // фильтровать на какие события будем реагировать
 import kotlinx.coroutines.flow.flatMapLatest        // позволяет переключать потоки (для переключения потоков событий активного игрока)
 import kotlinx.coroutines.flow.map                  // преобразование события в строку (для логирования)
 import kotlinx.coroutines.flow.onEach               // сделать действия для каждого элемента события
 import kotlinx.coroutines.flow.launchIn             // запустить подписку в определенном scope
-import lesson3.Player
 
 
 // -------- Статусы и маркеры квестов --------- //
@@ -58,8 +57,8 @@ data class QuestStateOnServer(
     val questId: String,
     val title: String,
     val status: QuestStatus,
-    val step: Int,
-    val progressCurrent: Int,
+    var step: Int,
+    var progressCurrent: Int,
     val progressTarget: Int,
     val isNew: Boolean,
     val isPinned: Boolean
@@ -256,6 +255,40 @@ class QuestSystem{
         // Автоматический переход из step 0 в step 1 (как будто он сразу говорит с NPC)
         // Сбор травы - меняем progressCurrent по умолчанию 0 и симулируем поднятие травы, изменяя до progressTarget
         // Создаем передачу предметов NPC, если условия удовлетворяют
+        if (q.step == 0) {
+            q.step += 1
+        }
+        when (q.step) {
+            1 -> when (event) {
+                is ItemCollected ->
+                    while (q.progressCurrent < q.progressTarget) {
+                        q.progressCurrent += 1
+                    }
+                else -> ""
+            }
+            2 -> when (event) {
+                is ItemGivenToNpc -> println("${event.npcId} передано ${event.itemId} в количестве ${event.count}")
+                else -> ""
+            }
+            else -> ""
+        }
+        q.step += 1
+        return q
+    }
+
+    private fun updateGuardQuest(q: QuestStateOnServer, event: GameEvent): QuestStateOnServer {
+        if (q.step == 0) {
+            q.step += 1
+        }
+        when (q.step) {
+            1 -> when (event) {
+                is GoldPaid -> println("Потрачено ${event.amount} золота")
+                else -> ""
+            }
+            else -> ""
+        }
+        q.step += 1
+        return q
     }
 }
 
