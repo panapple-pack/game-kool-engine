@@ -19,6 +19,7 @@ import jdk.jfr.DataAmount
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.isActive
 
 import kotlinx.coroutines.flow.MutableSharedFlow    // MutableSharedFlow
@@ -34,6 +35,8 @@ import kotlinx.coroutines.flow.flatMapLatest        // позволяет пер
 import kotlinx.coroutines.flow.map                  // преобразование события в строку (для логирования)
 import kotlinx.coroutines.flow.onEach               // сделать действия для каждого элемента события
 import kotlinx.coroutines.flow.launchIn             // запустить подписку в определенном scope
+import lesson2.GameState
+import kotlin.math.PI
 
 
 // -------- Статусы и маркеры квестов --------- //
@@ -135,7 +138,7 @@ data class CmdCollectItem(
 data class CmdPayGold(
     override val playerId: String,
     val itemId: String,
-    val count: Int
+    val amount: Int
 ) : GameCommand
 
 data class CmdGiveItemToNpc(
@@ -251,50 +254,312 @@ class QuestSystem{
         return copy.toList()
     }
 
+//    private fun updateAlchemistQuest(q: QuestStateOnServer, event: GameEvent): QuestStateOnServer {
+//        // Автоматический переход из step 0 в step 1 (как будто он сразу говорит с NPC)
+//        // Сбор травы - меняем progressCurrent по умолчанию 0 и симулируем поднятие травы, изменяя до progressTarget
+//        // Создаем передачу предметов NPC, если условия удовлетворяют
+//        if (q.step == 0) {
+//            q.step += 1
+//        }
+//        when (q.step) {
+//            1 -> when (event) {
+//                is ItemCollected ->
+//                    while (q.progressCurrent < q.progressTarget) {
+//                        q.progressCurrent += 1
+//                    }
+//                else -> ""
+//            }
+//            2 -> when (event) {
+//                is ItemGivenToNpc -> println("${event.npcId} передано ${event.itemId} в количестве ${event.count}")
+//                else -> ""
+//            }
+//            else -> ""
+//        }
+//        q.step += 1
+//        return q
+//    }
+//
+//    private fun updateGuardQuest(q: QuestStateOnServer, event: GameEvent): QuestStateOnServer {
+//        if (q.step == 0) {
+//            q.step += 1
+//        }
+//        when (q.step) {
+//            1 -> when (event) {
+//                is GoldPaid -> println("Потрачено ${event.amount} золота")
+//                else -> ""
+//            }
+//            else -> ""
+//        }
+//        q.step += 1
+//        return q
+//    }
+
     private fun updateAlchemistQuest(q: QuestStateOnServer, event: GameEvent): QuestStateOnServer {
-        // Автоматический переход из step 0 в step 1 (как будто он сразу говорит с NPC)
-        // Сбор травы - меняем progressCurrent по умолчанию 0 и симулируем поднятие травы, изменяя до progressTarget
-        // Создаем передачу предметов NPC, если условия удовлетворяют
-        if (q.step == 0) {
-            q.step += 1
-        }
-        when (q.step) {
-            1 -> when (event) {
-                is ItemCollected ->
-                    while (q.progressCurrent < q.progressTarget) {
-                        q.progressCurrent += 1
-                    }
-                else -> ""
+        val base = if (q.step == 0) {
+            q.copy(step = 1, progressCurrent = 0, progressTarget = 3, isNew = false)
+        } else q
+
+        if (base.step == 1 && event is ItemCollected && event.itemId == "herb") {
+            val newCurrent = (base.progressCurrent + event.countAdded).coerceAtMost(base.progressTarget)
+            val progressed = base.copy(progressCurrent = newCurrent, isNew = false)
+
+            if (newCurrent >= base.progressTarget) {
+                return progressed.copy(step = 2, progressCurrent = 0, progressTarget = 0)
             }
-            2 -> when (event) {
-                is ItemGivenToNpc -> println("${event.npcId} передано ${event.itemId} в количестве ${event.count}")
-                else -> ""
-            }
-            else -> ""
+            return progressed
         }
-        q.step += 1
-        return q
+
+        if (base.step == 2 && event is ItemGivenToNpc && event.npcId == "alchemist" && event.itemId == "herb") {
+            val completed = base.copy(status = QuestStatus.COMPLETED, step = 3, progressCurrent = 0)
+        }
+
+        return base
     }
 
     private fun updateGuardQuest(q: QuestStateOnServer, event: GameEvent): QuestStateOnServer {
-        if (q.step == 0) {
-            q.step += 1
-        }
-        when (q.step) {
-            1 -> when (event) {
-                is GoldPaid -> println("Потрачено ${event.amount} золота")
-                else -> ""
+        val base = if (q.step == 0) {
+            q.copy(step = 1, progressCurrent = 0, progressTarget = 5, isNew = false)
+        } else q
+
+        if (base.step == 1 && event is GoldPaid && event.amount > 0) {
+            val newCurrent = (base.progressCurrent + event.amount).coerceAtMost(base.progressTarget)
+            val progressed = base.copy(progressCurrent = newCurrent, isNew = false)
+
+            if (newCurrent >= base.progressTarget) {
+                return progressed.copy(status = QuestStatus.COMPLETED, step = 2, progressCurrent = 0, progressTarget = 0)
             }
-            else -> ""
+            return progressed
         }
-        q.step += 1
-        return q
+        return base
     }
 }
 
+class GameServer {
+    private val _events = MutableSharedFlow<GameEvent>(extraBufferCapacity = 64)
+    val events: SharedFlow<GameEvent> = _events.asSharedFlow()
 
+    private val _commands = MutableSharedFlow<GameCommand>(extraBufferCapacity = 64)
+    val commands: SharedFlow<GameCommand> = _commands.asSharedFlow()
 
+    fun trySend(cmd: GameCommand): Boolean = _commands.tryEmit(cmd)
+    // tryEmit - эт быстрый способ отправить команду (без корутины)
 
+    private val _players = MutableStateFlow(
+        mapOf(
+            "Oleg" to PlayerData("Oleg", 0, emptyMap()),
+            "Stas" to PlayerData("Stas", 0, emptyMap())
+        )
+    )
+    val players: SharedFlow<Map<String, PlayerData>> = _players.asStateFlow()
+
+    private val _questsByPlayer = MutableStateFlow(
+        mapOf(
+            "Oleg" to listOf(
+                QuestStateOnServer("q_alchemist", "Помощь Хайзенбергу", QuestStatus.ACTIVE, 0, 0, 0, true, false),
+                QuestStateOnServer("q_guard", "Взятка стражнику этой двери", QuestStatus.ACTIVE, 0, 0, 0, true, false)
+            ),
+            "Stas" to listOf(
+                QuestStateOnServer("q_alchemist", "Помощь Хайзенбергу", QuestStatus.ACTIVE, 0, 0, 0, true, false),
+                QuestStateOnServer("q_guard", "Взятка стражнику этой двери", QuestStatus.ACTIVE, 0, 0, 0, true, false)
+            )
+        )
+    )
+    val questsByPlayer: StateFlow<Map<String, List<QuestStateOnServer>>> = _questsByPlayer.asStateFlow()
+
+    fun start(scope: kotlinx.coroutines.CoroutineScope, questSystem: QuestSystem) {
+        // Сервер слушает и выполняет их
+
+        scope.launch {
+            commands.collect{ cmd ->
+                progressCommand(cmd, questSystem)
+            }
+        }
+    }
+
+    private fun getPlayerData(playerId: String): PlayerData {
+        return _players.value[playerId] ?: PlayerData(playerId, 0, emptyMap())
+    }
+
+    private fun setPlayerData(playerId: String, newdata: PlayerData) {
+        val map = _players.value.toMutableMap()
+        map[playerId] = newdata
+        _players.value = map.toMap()
+    }
+
+    private fun getQuests(playerId: String): List<QuestStateOnServer> {
+        return _questsByPlayer.value[playerId] ?: emptyList()
+    }
+
+    fun setQuest(playerId: String, quests: List<QuestStateOnServer>) {
+        val map = _questsByPlayer.value.toMutableMap()
+        map[playerId] = quests
+        _questsByPlayer.value = map.toMap()
+    }
+
+    private suspend fun progressCommand(cmd: GameCommand, questSystem: QuestSystem) {
+        when(cmd) {
+            is CmdOpenQuest -> {
+                val list = getQuests(cmd.questId).toMutableList()
+                for (i in list.indices) {
+                    if (list[i].questId == cmd.questId) {
+                        list[i] = list[i].copy(isNew = false)
+                    }
+                }
+                setQuest(cmd.playerId, list)
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdPinQuest -> {
+                val list = getQuests(cmd.questId).toMutableList()
+                for (i in list.indices) {
+                    if (list[i].questId == cmd.questId) {
+                        list[i] = list[i].copy(isPinned = true)
+                    }
+                }
+                setQuest(cmd.playerId, list)
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdGiveGoldDebug -> {
+                val p = getPlayerData(cmd.playerId)
+                val updated = p.copy(gold = p.gold + cmd.amount)
+                setPlayerData(cmd.playerId, updated)
+
+                _events.emit(ServerMessage(cmd.playerId, "Выдано залото: +${cmd.amount}"))
+            }
+            is CmdCollectItem -> {
+                val p = getPlayerData(cmd.playerId)
+
+                val oldCount =  p.inventory.toMutableMap()
+                val newCount = oldCount + cmd.count
+
+                val inventory = p.inventory.toMutableMap()
+                inventory[cmd.itemId] = newCount
+
+                setPlayerData(cmd.playerId, p.copy(inventory = inventory.toMap()))
+
+                val ev = ItemCollected(cmd.playerId, cmd.itemId, cmd.count)
+                _events.emit(ev)
+
+                val newQuest = questSystem.onEvent(cmd.playerId, getQuests(cmd.playerId), ev)
+
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdPayGold -> {
+                val p = getPlayerData(cmd.playerId)
+
+                if (p.gold < cmd.amount) {
+                    _events.emit(ServerMessage(cmd.playerId, "Недостаточно золота: нужно ${cmd.amount}"))
+                    return
+                }
+
+                setPlayerData(cmd.playerId, p.copy(gold = p.gold - cmd.amount))
+
+                val ev = GoldPaid(cmd.playerId, cmd.amount)
+                _events.emit(ev)
+
+                val newQuests = questSystem.onEvent(cmd.playerId, getQuests(cmd.playerId), ev)
+                setQuest(cmd.playerId, newQuests)
+
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+            is CmdGiveItemToNpc -> {
+                val p = getPlayerData(cmd.playerId)
+
+                val have = p.inventory[cmd.itemId] ?: 0
+                if (have < cmd.count) {
+                    _events.emit(ServerMessage(cmd.playerId, "Не хватает ${cmd.itemId}"))
+                    return
+                }
+
+                val newCount = have - cmd.count
+                val inventory = p.inventory.toMutableMap()
+                if (newCount <= 0) inventory.remove(cmd.itemId) else inventory[cmd.itemId] = newCount
+
+                setPlayerData(cmd.playerId, p.copy(inventory = inventory.toMap()))
+
+                val ev = ItemGivenToNpc(cmd.playerId, cmd.npcId, cmd.itemId, cmd.count)
+                _events.emit(ev)
+
+                val newQuests = questSystem.onEvent(cmd.playerId, getQuests(cmd.playerId), ev)
+                setQuest(cmd.playerId, newQuests)
+
+                _events.emit(QuestJournalUpdated(cmd.playerId))
+            }
+        }
+    }
+}
+
+class HudState {
+    val activePlayerIdFlow = MutableStateFlow("Oleg")
+    val activePlayerIdUi = mutableStateOf("Oleg")
+
+    val gold = mutableStateOf(0)
+    val inventoryText = mutableStateOf("Inventory (entry)")
+
+    val questEntries = mutableStateOf<List<QuestJournalEntry>>(emptyList())
+    val selectedQuestId = mutableStateOf<String?>(null)
+
+    val log = mutableStateOf<List<String>>(emptyList())
+}
+
+fun hudLog(hud: HudState, text: String) {
+    hud.log.value = (hud.log.value + text).takeLast(20)
+}
+
+fun markerSymbol(m: QuestMarker): String {
+    return when(m) {
+        QuestMarker.NEW -> "!"
+        QuestMarker.PINNED -> "->"
+        QuestMarker.COMPLETED -> "✔"
+        QuestMarker.NONE -> "*"
+    }
+}
+
+fun main() = KoolApplication {
+    val hud = HudState()
+    val server = GameServer()
+    val questSystem = QuestSystem()
+
+    // Сцена 3D
+    addScene {
+        defaultOrbitCamera()
+
+        addColorMesh {
+            generate { cube { colored() } }
+
+            shader = KslPbrShader {
+                color { vertexColor() }
+                metallic(0.7f)
+                roughness(0.10f)
+            }
+            onUpdate {
+                transform.rotate(45f.deg * Time.deltaT, Vec3f.Z_AXIS)
+            }
+        }
+
+        lighting.singleDirectionalLight {
+            setup(Vec3f(-1f, -1f, 1f))
+            setColor(Color.WHITE, 7f)
+        }
+
+        server.start(coroutineScope, questSystem)
+    }
+
+    addScene {
+        setupUiScene(ClearColorLoad)
+
+        // Запускаем подписку на player data (gold inventory) для активного игрока
+        coroutineScope.launch {
+            server.players.collect{map ->
+                // получаем активного игрока id
+                // Сохраням игрока по его айди из map если null возвращаем collect
+                // присваиваем кол-во золота в hud состояние
+                // присваиваем inventory к hud инвентаря
+                // joinToString{} - превращает список элементов в одну строку
+                // инвентарь если он не пуст достаточно вывести в формате Inventory: ItemId
+            }
+        }
+    }
+}
 
 
 
