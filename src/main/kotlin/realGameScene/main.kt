@@ -1,7 +1,5 @@
 package realGameScene
 
-import QuestJournal2.GameEvent
-import QuestJournal2.PlayerData
 import QuestJournal2.QuestSystem
 import de.fabmax.kool.KoolApplication           // Запускает движок
 import de.fabmax.kool.addScene                 // Функция добавления сцены (Игра, UI, Меню, Уровень)
@@ -45,7 +43,8 @@ enum class QuestState {
 
 enum class WorldObjectType {
     ALCHEMIST,
-    HERB_SOURCE
+    HERB_SOURCE,
+    CHEST
 }
 
 // Описание объекта в мире
@@ -73,7 +72,8 @@ data class PlayerState(
     val inventory: Map<String, Int>,
     val alchemistMemory: NpcMemory,
     val currentAreaId: String?,            // в какой локации находится (может быть null если ни в какой)
-    val hintText: String
+    val hintText: String,
+    val gold: Int
 )
 
 
@@ -103,7 +103,8 @@ fun initialPlayerState(playerId: String): PlayerState {
                 false
             ),
             null,
-            "Подойди к любой области на карте"
+            "Подойди к любой области на карте",
+            0
         )
     } else {
         PlayerState(
@@ -118,7 +119,8 @@ fun initialPlayerState(playerId: String): PlayerState {
                 false
             ),
             null,
-            "Подойди к любой области на карте"
+            "Подойди к любой области на карте",
+            0
         )
     }
 }
@@ -244,43 +246,48 @@ sealed interface GameEvent {
 data class EnteredArea(
     override val playerId: String,
     val areaId: String
-): GameCommand
+): GameEvent
 
 data class LeftArea(
     override val playerId: String,
     val areaId: String
-): GameCommand
+): GameEvent
 
 data class InteractWithNpc(
     override val playerId: String,
     val npcId: String
-): GameCommand
+): GameEvent
 
 data class InteractedWithHerbSource(
     override val playerId: String,
     val sourceId: String
-): GameCommand
+): GameEvent
+
+data class InteractedWithTreasureBox(
+    override val playerId: String,
+    val treasureBoxId: String
+): GameEvent
 
 data class InventoryChanged(
     override val playerId: String,
     val itemId: String,
     val newCount: Int
-): GameCommand
+): GameEvent
 
 data class QuestStateChanged(
     override val playerId: String,
     val newState: QuestState
-): GameCommand
+): GameEvent
 
 data class NpcMemoryChanged(
     override val playerId: String,
     val memory: NpcMemory
-): GameCommand
+): GameEvent
 
 data class ServerMessage(
     override val playerId: String,
     val text: String
-): GameCommand
+): GameEvent
 
 
 
@@ -302,17 +309,24 @@ class GameServer {
             3f,
             0f,
             1.7f
+        ),
+        WorldObjectDef(
+            "treasure_box",
+            WorldObjectType.CHEST,
+            8f,
+            0f,
+            1.7f
         )
     )
 
     // Поток событий
-    private val _events = MutableSharedFlow<QuestJournal2.GameEvent>(extraBufferCapacity = 64)
+    private val _events = MutableSharedFlow<GameEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<GameEvent> = _events.asSharedFlow()
 
-    private val _commands = MutableSharedFlow<QuestJournal2.GameCommand>(extraBufferCapacity = 64)
-    val commands: SharedFlow<QuestJournal2.GameCommand> = _commands.asSharedFlow()
+    private val _commands = MutableSharedFlow<GameCommand>(extraBufferCapacity = 64)
+    val commands: SharedFlow<GameCommand> = _commands.asSharedFlow()
 
-    fun trySend(cmd: QuestJournal2.GameCommand): Boolean = _commands.tryEmit(cmd)
+    fun trySend(cmd: GameCommand): Boolean = _commands.tryEmit(cmd)
     // tryEmit - эт быстрый способ отправить команду (без корутины)
 
     private val _players = MutableStateFlow(
@@ -337,9 +351,9 @@ class GameServer {
         return _players.value[playerId] ?: initialPlayerState(playerId)
     }
 
-    private fun setPlayerData(playerId: String, newdata: PlayerState) {
+    private fun setPlayerData(playerId: String, newData: PlayerState) {
         val map = _players.value.toMutableMap()
-        map[playerId] = newdata
+        map[playerId] = newData
         _players.value = map.toMap()
     }
 
@@ -367,16 +381,70 @@ class GameServer {
         // orNull - если список этих объектов пуст - вернуть null
     }
 
-    // Метод refreshPlayerArea (playerId: String)
-    // должен пересчитывать в какой зоне сейчас находится игрок
-    // Получить игрока
-    // получить ближайший объект
-    // сохрать старое состояние игрока в какой зоне он был ранее
-    // рассчитать id зоны в которую он попал теперь new
+    private fun refreshPlayerArea(playerId: String){
 
-    // сравнение новой зоны со старой
-    // в зависимости от того, в какой зоне он находится в newHint вернуть текст для зоны alchemist и зоны herb_source
-    // после обновляем игрока (свойство hintText)
+        val player = getPlayerData(playerId)
+        val nearObject = nearestObject(player)
+
+        val oldArea = player.currentAreaId
+        val newArea = nearObject?.id
+
+        var newHint = ""
+
+        if (newArea == "alchemist"){
+            newHint = "Ты находися в зоне Алхимика, поговори с ним чтобы принять квест"
+        }else if(newArea == "herb_source"){
+            newHint = "Ты находися в зоне Источника травы, собери траву для алхимика"
+        } else if (newArea == "treasure_box"){
+
+        } else{
+            newHint = "Вы не находитесь в зоне активности, подойдите к новому объекту"
+        }
+
+        updatePlayer(playerId) {player ->
+            player.copy(hintText = newHint)
+        }
+    }
+    private fun interact(playerId: String, cmd: GameCommand, event: GameEvent): PlayerState {
+        val player = getPlayerData(playerId)
+        val copy = player.copy()
+        var golds = copy.gold
+        when (cmd) {
+            is CmdInteract -> {
+                when (event) {
+                    is InteractedWithTreasureBox -> {
+                        val nearestObject = nearestObject(player)
+                        if (nearestObject?.type == WorldObjectType.CHEST && nearestObject.id == "treasure_box") {
+                            golds += 1
+                            return player.copy(gold = golds)
+                        }
+                    }
+                    else -> ""
+                }
+            }
+            else -> ""
+        }
+        return player
+    }
+
+    private fun dialogueWithNpc(playerId: String, cmd: GameCommand) {
+        val player = getPlayerData(playerId)
+        val copy = player.copy()
+        when (cmd) {
+            is CmdChooseDialogueOption -> {
+                val nearestObject = nearestObject(player)
+                if  {
+
+                }
+            }
+        }
+    }
+    
+    fun progressCommand(cmd: GameCommand, questSystem: QuestSystem) {
+
+    }
+
+
 }
 
 
