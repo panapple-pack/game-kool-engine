@@ -27,9 +27,8 @@ import kotlinx.coroutines.flow.flatMapLatest       // flatMapLatest - перек
 import kotlinx.coroutines.flow.map                 // map { } - преобразовывать элементы потока
 import kotlinx.coroutines.flow.onEach              // onEach { } - делать побочное действие на каждом элементе
 import kotlinx.coroutines.flow.launchIn            // launchIn(scope) - запускать подписку потока в coroutineScope
-import questMarker.GameServer
-import questMarker.GridPos
-import questMarker.HudState
+import org.w3c.dom.Text
+import questMarker.CmdStepMove
 
 
 ////// Импорты библиотеки desktop Keyboard bridge (JVM)  //////
@@ -63,6 +62,8 @@ import kotlin.math.sin
 // cos - косинус нужен для математики высчитывания направлений
 
 import kotlin.math.sqrt
+import kotlin.random.Random
+
 // Квадратный корень числа
 // Нужен для длины вектора и расстояний
 
@@ -211,7 +212,9 @@ data class PlayerState(
 
     val hintText: String,
     val pinnedQuestEnabled: Boolean,
-    val pinnedTargetId: String?
+    val pinnedTargetId: String?,
+    val lastDamage: Int,
+    val hp: Int
 )
 
 fun lerp(current: Float, target: Float, t: Float): Float {
@@ -292,7 +295,9 @@ fun initialPlayerState(playerId: String): PlayerState {
             null,
             "Иди к объекту",
             true,
-            "alchemist"
+            "alchemist",
+            0,
+            100
         )
     }else{
         PlayerState(
@@ -314,7 +319,9 @@ fun initialPlayerState(playerId: String): PlayerState {
             null,
             "Иди к объекту",
             true,
-            "alchemist"
+            "alchemist",
+            0,
+            100
         )
     }
 }
@@ -461,6 +468,11 @@ data class CmdTogglePinnedQuest(
     override val playerId: String
 ): GameCommand
 
+data class CmdTakeDamage(
+    override val playerId: String,
+    val damage: Int
+): GameCommand
+
 
 
 sealed interface GameEvent{
@@ -528,6 +540,11 @@ data class InventoryChanged(
     override val playerId: String,
     val itemId: String,
     val newCount: Int
+): GameEvent
+
+data class TakeDamage(
+    override val playerId: String,
+    val damage: Int
 ): GameEvent
 
 
@@ -961,6 +978,14 @@ class GameServer {
                 _events.emit(ServerMessage(cmd.playerId, "Pinned marker = ${after.pinnedQuestEnabled}"))
                 refreshDerivedState(cmd.playerId)
             }
+            is CmdTakeDamage -> {
+                val player = getPlayerData(cmd.playerId)
+                val damage = Random.nextInt(2, 6)
+                updatePlayer(cmd.playerId) { p ->
+                    p.copy(hp = player.hp - damage, lastDamage = damage)
+                }
+                _events.emit(TakeDamage(cmd.playerId, damage))
+            }
         }
     }
 }
@@ -968,6 +993,7 @@ class GameServer {
 class HudState{
     val activePlayerIdFlow = MutableStateFlow("Oleg")
     val activePlayerIdUi = mutableStateOf("Oleg")
+    val hp = mutableStateOf(100)
 
     val playerSnapShot = mutableStateOf(initialPlayerState("Oleg"))
 
@@ -1018,6 +1044,7 @@ fun eventToText(e: GameEvent): String{
         is QuestStateChanged -> "QuestStateChanged ${e.newState}"
         is NpcMemoryChanged -> "NpcMemoryChanged встретился = ${e.memory.hasMet}, сколько раз поговорил = ${e.memory.timeTalked}, Отдал траву = ${e.memory.receiveHerb}"
         is ServerMessage -> "Server ${e.text}"
+        is TakeDamage -> ""
     }
 }
 
@@ -1045,11 +1072,11 @@ fun main() = KoolApplication {
         }
 
         val wallCells = listOf(
-            GridPos(-1, 1),
-            GridPos(0, 1),
-            GridPos(1, 1),
-            GridPos(1, 0),
-            GridPos(2, 0)
+            ObstacleDef(-1f, 1f, 1f),
+            ObstacleDef(0f, 1f, 1f),
+            ObstacleDef(1f, 1f, 1f),
+            ObstacleDef(1f, 0f, 1f),
+            ObstacleDef(2f, 0f, 1f)
         )
 
         for (wallCell in wallCells) {
@@ -1061,7 +1088,7 @@ fun main() = KoolApplication {
                     metallic(0f)
                     roughness(0.35f)
                 }
-            }.transform.translate(wallCell.x.toFloat(), 0f, wallCell.z.toFloat())
+            }.transform.translate(wallCell.centerX.toFloat(), 0f, wallCell.centerZ.toFloat())
         }
 
         val playerNode = addColorMesh {
@@ -1114,6 +1141,44 @@ fun main() = KoolApplication {
                 color { vertexColor() }
                 metallic(0f)
                 roughness(0.15f)
+            }
+        }
+        server.start(coroutineScope)
+    }
+    addScene {
+        setupUiScene(ClearColorLoad)
+
+        addPanelSurface {
+            val player = hud.playerSnapShot.use()
+            modifier
+                .size(300.dp, 50.dp)
+                .align(AlignmentX.End, AlignmentY.Bottom)
+                .margin(27.dp)
+                .background(RoundRectBackground(Color(0f, 0f, 0f, 0.65f), 0.dp))
+                .padding(20.dp)
+
+            addPanelSurface {
+
+                modifier
+                    .size(300.dp - player.lastDamage.dp, 50.dp)
+                    .align(AlignmentX.End, AlignmentY.Bottom)
+                    .margin(27.dp)
+                    .background(RoundRectBackground(Color(225f, 45f, 76f, 0.65f), 0.dp))
+                    .padding(20.dp)
+            }
+        }
+        addPanelSurface {
+            val player = hud.playerSnapShot.use()
+            modifier
+                .size(240.dp, 240.dp)
+                .align(AlignmentX.Start, AlignmentY.Top)
+                .margin(27.dp)
+                .background(RoundRectBackground(Color(225f, 45f, 76f, 0.65f), 0.dp))
+                .padding(20.dp)
+            Button("Принять урон") {
+                modifier.onClick {
+                    server.trySend(CmdTakeDamage(player.playerId, Random.nextInt()))
+                }
             }
         }
     }
