@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.onEach              // onEach { } - делать 
 import kotlinx.coroutines.flow.launchIn            // launchIn(scope) - запускать подписку потока в coroutineScope
 import org.w3c.dom.Text
 import questMarker.CmdStepMove
+import questMarker.hudLog
 
 
 ////// Импорты библиотеки desktop Keyboard bridge (JVM)  //////
@@ -980,11 +981,15 @@ class GameServer {
             }
             is CmdTakeDamage -> {
                 val player = getPlayerData(cmd.playerId)
-                val damage = Random.nextInt(2, 6)
+                val damage = cmd.damage
                 updatePlayer(cmd.playerId) { p ->
-                    p.copy(hp = player.hp - damage, lastDamage = damage)
+                    p.copy(hp = (player.hp - damage), lastDamage = damage)
                 }
                 _events.emit(TakeDamage(cmd.playerId, damage))
+                println(player.lastDamage)
+                println(damage)
+                println(cmd.damage)
+                println(player.hp)
             }
         }
     }
@@ -994,6 +999,7 @@ class HudState{
     val activePlayerIdFlow = MutableStateFlow("Oleg")
     val activePlayerIdUi = mutableStateOf("Oleg")
     val hp = mutableStateOf(100)
+    val hudWidth = mutableStateOf(300)
 
     val playerSnapShot = mutableStateOf(initialPlayerState("Oleg"))
 
@@ -1150,6 +1156,7 @@ fun main() = KoolApplication {
 
         addPanelSurface {
             val player = hud.playerSnapShot.use()
+
             modifier
                 .size(300.dp, 50.dp)
                 .align(AlignmentX.End, AlignmentY.Bottom)
@@ -1158,26 +1165,51 @@ fun main() = KoolApplication {
                 .padding(20.dp)
 
             addPanelSurface {
+                coroutineScope.launch {
+                    server.events.collect { event ->
+                        val damage = when(event) {
+                            is TakeDamage -> {
+                                val newBar = hud.hudWidth.value - (event.damage * 3)
+                                hud.hudWidth.value = newBar
+                                hud.hp.value - event.damage
+                                hudLog(hud, "${hud.hudWidth.value}")
+                                hudLog(hud, "${hud.hp.value}")
+                            }
+                            else -> {}
+                        }
+                        hudLog(hud, "$damage")
+                    }
+                }
 
                 modifier
-                    .size(300.dp - player.lastDamage.dp, 50.dp)
+                    .size(hud.hudWidth.use().dp, 50.dp)
                     .align(AlignmentX.End, AlignmentY.Bottom)
                     .margin(27.dp)
-                    .background(RoundRectBackground(Color(225f, 45f, 76f, 0.65f), 0.dp))
+                    .background(RoundRectBackground(Color(255f, 255f, 255f, 0.65f), 0.dp))
                     .padding(20.dp)
             }
         }
         addPanelSurface {
             val player = hud.playerSnapShot.use()
+
+
             modifier
                 .size(240.dp, 240.dp)
                 .align(AlignmentX.Start, AlignmentY.Top)
                 .margin(27.dp)
-                .background(RoundRectBackground(Color(225f, 45f, 76f, 0.65f), 0.dp))
+                .background(RoundRectBackground(Color(0f, 0f, 0f, 0.05f), 0.dp))
                 .padding(20.dp)
             Button("Принять урон") {
                 modifier.onClick {
-                    server.trySend(CmdTakeDamage(player.playerId, Random.nextInt()))
+                    server.trySend(CmdTakeDamage(player.playerId, Random.nextInt(2, 6)))
+                }
+            }
+            Text("Log: ") {
+                modifier.margin(top = sizes.gap)
+            }
+            for (line in hud.log.use()) {
+                Text(line) {
+                    modifier.font(sizes.smallText)
                 }
             }
         }
