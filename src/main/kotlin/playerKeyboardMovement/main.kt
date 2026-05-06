@@ -1171,13 +1171,12 @@ fun main() = KoolApplication {
                             is TakeDamage -> {
                                 val newBar = hud.hudWidth.value - (event.damage * 3)
                                 hud.hudWidth.value = newBar
-                                hud.hp.value - event.damage
+                                hud.hp.value -= event.damage
                                 hudLog(hud, "${hud.hudWidth.value}")
                                 hudLog(hud, "${hud.hp.value}")
                             }
                             else -> {}
                         }
-                        hudLog(hud, "$damage")
                     }
                 }
 
